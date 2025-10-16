@@ -43,7 +43,7 @@ def main(args, debug=False):
     os.environ["CUDA_VISIBLE_DEVICES"] = '{}'.format(args.gpu_id)
 
     print(args)
-    device = torch.device('cuda')
+    device = torch.device('cpu')
     # get the P2PNet
     model = build_model(args)
     # move to GPU
@@ -61,14 +61,14 @@ def main(args, debug=False):
     ])
 
     # set your image path here
-    img_path = "./vis/demo1.jpg"
+    img_path = "./vis/IMG_86.jpg"
     # load the images
     img_raw = Image.open(img_path).convert('RGB')
     # round the size
     width, height = img_raw.size
     new_width = width // 128 * 128
     new_height = height // 128 * 128
-    img_raw = img_raw.resize((new_width, new_height), Image.ANTIALIAS)
+    img_raw = img_raw.resize((new_width, new_height), Image.Resampling.LANCZOS)
     # pre-proccessing
     img = transform(img_raw)
 
