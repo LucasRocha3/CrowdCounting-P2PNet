@@ -147,10 +147,7 @@ class AnchorPoints(nn.Module):
 
         all_anchor_points = np.expand_dims(all_anchor_points, axis=0)
         # send reference points to device
-        if torch.cuda.is_available():
-            return torch.from_numpy(all_anchor_points.astype(np.float32)).cuda()
-        else:
-            return torch.from_numpy(all_anchor_points.astype(np.float32))
+        return torch.from_numpy(all_anchor_points.astype(np.float32)).to(image.device)
 
 class Decoder(nn.Module):
     def __init__(self, C3_size, C4_size, C5_size, feature_size=256):

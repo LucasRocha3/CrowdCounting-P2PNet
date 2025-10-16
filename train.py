@@ -6,6 +6,7 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader, DistributedSampler
+import numpy as np
 
 from crowd_datasets import build_dataset
 from engine import *
@@ -13,6 +14,9 @@ from models import build_model
 import os
 from tensorboardX import SummaryWriter
 import warnings
+
+import util.misc as utils
+
 warnings.filterwarnings('ignore')
 
 def get_args_parser():
@@ -71,12 +75,18 @@ def get_args_parser():
     parser.add_argument('--num_workers', default=8, type=int)
     parser.add_argument('--eval_freq', default=5, type=int,
                         help='frequency of evaluation, default setting is evaluating in every 5 epoch')
-    parser.add_argument('--gpu_id', default=0, type=int, help='the gpu used for training')
+    parser.add_argument('--gpu_id', default='0', type=str, help='the gpu used for training')
 
     return parser
 
 def main(args):
-    os.environ["CUDA_VISIBLE_DEVICES"] = '{}'.format(args.gpu_id)
+    if torch.cuda.is_available():
+        os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
+    
+    os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(args.checkpoints_dir, exist_ok=True)
+    os.makedirs(args.tensorboard_dir, exist_ok=True)
+
     # create the logging file
     run_log_name = os.path.join(args.output_dir, 'run_log.txt')
     with open(run_log_name, "w") as log_file:
@@ -88,7 +98,14 @@ def main(args):
     print(args)
     with open(run_log_name, "a") as log_file:
         log_file.write("{}".format(args))
-    device = torch.device('cuda')
+    
+    if torch.backends.mps.is_available():
+        device = torch.device('mps')
+    elif torch.cuda.is_available():
+        device = torch.device('cuda')
+    else:
+        device = torch.device('cpu')
+
     # fix the seed for reproducibility
     seed = args.seed + utils.get_rank()
     torch.manual_seed(seed)
@@ -101,6 +118,8 @@ def main(args):
     criterion.to(device)
 
     model_without_ddp = model
+    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        model = torch.nn.DataParallel(model)
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
@@ -119,15 +138,17 @@ def main(args):
     loading_data = build_dataset(args=args)
     # create the training and valiation set
     train_set, val_set = loading_data(args.data_root)
-    # create the sampler used during training
-    sampler_train = torch.utils.data.RandomSampler(train_set)
-    sampler_val = torch.utils.data.SequentialSampler(val_set)
 
-    batch_sampler_train = torch.utils.data.BatchSampler(
-        sampler_train, args.batch_size, drop_last=True)
-    # the dataloader for training
-    data_loader_train = DataLoader(train_set, batch_sampler=batch_sampler_train,
-                                   collate_fn=utils.collate_fn_crowd, num_workers=args.num_workers)
+    if not args.eval:
+        # create the sampler used during training
+        sampler_train = torch.utils.data.RandomSampler(train_set)
+        batch_sampler_train = torch.utils.data.BatchSampler(
+            sampler_train, args.batch_size, drop_last=True)
+        # the dataloader for training
+        data_loader_train = DataLoader(train_set, batch_sampler=batch_sampler_train,
+                                    collate_fn=utils.collate_fn_crowd, num_workers=args.num_workers)
+
+    sampler_val = torch.utils.data.SequentialSampler(val_set)
 
     data_loader_val = DataLoader(val_set, 1, sampler=sampler_val,
                                     drop_last=False, collate_fn=utils.collate_fn_crowd, num_workers=args.num_workers)
@@ -143,6 +164,15 @@ def main(args):
             optimizer.load_state_dict(checkpoint['optimizer'])
             lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
             args.start_epoch = checkpoint['epoch'] + 1
+    
+    if args.eval:
+        t1 = time.time()
+        result = evaluate_crowd_no_overlap(model, data_loader_val, device)
+        t2 = time.time()
+        print('=======================================test=======================================')
+        print("mae:", result[0], "mse:", result[1], "time:", t2 - t1)
+        print('=======================================test=======================================')
+        return 0
 
     print("Start training")
     start_time = time.time()
@@ -215,6 +245,7 @@ def main(args):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
+    return total_time
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('P2PNet training and evaluation script', parents=[get_args_parser()])
